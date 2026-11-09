@@ -26,17 +26,9 @@ runs:
   steps:
     - name: Install KooCLI (hcloud)
       shell: bash
-      run: |
-        set -euo pipefail
-        if ! command -v hcloud >/dev/null; then
-          curl -fsSL https://hwcloudcli.obs.cn-north-1.myhuaweicloud.com/cli/latest/hcloud_install.sh -o /tmp/hcloud_install.sh
-          bash /tmp/hcloud_install.sh -y
-          echo "$HOME/.hcloud/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.hcloud/bin:$PATH"
-        fi
-        hcloud configure set --cli-agree-privacy-statement=true \
-          --cli-read-timeout=20 --cli-connect-timeout=10 >/dev/null
-        hcloud version
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/scripts/install-hcloud.sh"
 
     - name: Upgrade CAE component
       shell: bash
@@ -60,7 +52,7 @@ runs:
         SECRET_KEY="${SECRET_KEY:-${HUAWEICLOUD_SDK_SK:-}}"
         SECURITY_TOKEN="${SECURITY_TOKEN:-${HUAWEICLOUD_SDK_SECURITY_TOKEN:-}}"
         if [[ -z "$ACCESS_KEY" || -z "$SECRET_KEY" ]]; then
-          echo "No credentials. Run an auth step first (e.g. configure-huawei-cloud-credentials) or pass accessKey/secretKey." >&2
+          echo "No credentials. Run the huaweicloud-cae-deploy/auth step first, or pass accessKey/secretKey." >&2
           exit 1
         fi
         echo "::add-mask::$SECRET_KEY"

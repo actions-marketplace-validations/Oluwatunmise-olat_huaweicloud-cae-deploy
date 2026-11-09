@@ -30,8 +30,21 @@ jobs:
           provider-urn: ${{ vars.HUAWEI_OIDC_PROVIDER_URN }}
           agency-urn: ${{ vars.HUAWEI_AGENCY_URN }}
           sts-region: af-south-1 # fall back to ap-southeast-1 if unreachable
+          duration-seconds: 3600
 
-      # ... build and push the image to SWR here, tagged $IMAGE_TAG ...
+      - name: Log in to SWR (temporary, no stored keys)
+        uses: Oluwatunmise-olat/huaweicloud-cae-deploy/swr-login@FULL_COMMIT_SHA
+        with:
+          region: af-south-1
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: swr.af-south-1.myhuaweicloud.com/redacted/redacted-core:${{ env.IMAGE_TAG }}
 
       - name: Deploy to CAE
         uses: Oluwatunmise-olat/huaweicloud-cae-deploy@FULL_COMMIT_SHA

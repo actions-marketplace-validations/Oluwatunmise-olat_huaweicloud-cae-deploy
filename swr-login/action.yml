@@ -1,0 +1,38 @@
+---
+name: Log in to Huawei Cloud SWR
+description: Docker login to SWR with short-lived credentials from the auth action (no stored AK/SK).
+author: "Oluwatunmise Olatunbosun"
+branding:
+  icon: lock
+  color: red
+
+inputs:
+  region:           {description: "SWR region, e.g. af-south-1", required: true}
+  duration-seconds: {description: Login lifetime in seconds (900-86400); empty uses the API default, required: false, default: "3600"}
+  accessKey:        {description: Access Key ID (defaults to $HUAWEICLOUD_SDK_AK), required: false, default: ""}
+  secretKey:        {description: Secret Access Key (defaults to $HUAWEICLOUD_SDK_SK), required: false, default: ""}
+  securityToken:    {description: Security token (defaults to $HUAWEICLOUD_SDK_SECURITY_TOKEN), required: false, default: ""}
+
+outputs:
+  registry: {description: "Registry host logged in to, e.g. swr.af-south-1.myhuaweicloud.com", value: "${{ steps.login.outputs.registry }}"}
+
+runs:
+  using: composite
+  steps:
+    - name: Install KooCLI (hcloud)
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/../scripts/install-hcloud.sh"
+
+    - id: login
+      name: Docker login to SWR
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        REGION: ${{ inputs.region }}
+        DURATION: ${{ inputs.duration-seconds }}
+        ACCESS_KEY: ${{ inputs.accessKey }}
+        SECRET_KEY: ${{ inputs.secretKey }}
+        SECURITY_TOKEN: ${{ inputs.securityToken }}
+      run: bash "$ACTION_PATH/../scripts/swr-login.sh"

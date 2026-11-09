@@ -9,6 +9,7 @@ It mirrors the shape of the `google-github-actions` pair:
 | Action | Equivalent to | What it does |
 |---|---|---|
 | `huaweicloud-cae-deploy/auth` | `google-github-actions/auth` | Exchanges the GitHub OIDC token for short-lived STS credentials (IAM v5 `AssumeAgencyWithOIDC`) and exports them as `HUAWEICLOUD_SDK_AK` / `_SK` / `_SECURITY_TOKEN` |
+| `huaweicloud-cae-deploy/swr-login` | `docker/login-action` with `auth` credentials | Turns those short-lived credentials into a temporary SWR `docker login` (SWR `CreateSecret`), so pushing images needs no stored AK/SK either |
 | `huaweicloud-cae-deploy` | `google-github-actions/deploy-appengine` | Resolves the CAE environment/application/component by name and upgrades it to a new SWR image |
 
 ---
@@ -17,6 +18,7 @@ It mirrors the shape of the `google-github-actions` pair:
 
 * Upgrades a CAE component to a new SWR image on every run
 * Supports short-lived STS credentials via OIDC (no AK/SK stored in secrets)
+* Pushes images to SWR with a temporary docker login from the same credentials (`swr-login`)
 * Falls back to explicit `accessKey` / `secretKey` / `securityToken` inputs if you skip the `auth` step
 * Resolves environment, application, and component names to IDs automatically
 * Masks all secrets and tokens in workflow logs
@@ -29,7 +31,7 @@ It mirrors the shape of the `google-github-actions` pair:
 
 1. **Identity provider** — IAM v5 console → Identity Providers → Create. Type `OIDC`, name `github_com`, URL `https://token.actions.githubusercontent.com`, audience `sts.huaweicloud.com`.
 2. **Agency** — IAM v5 console → Agencies → Create, with a custom trust policy. Use [`docs/trust-policy.json`](docs/trust-policy.json), replacing `<ACCOUNT_ID>`, `<ORG>`, `<REPO>`. Pin `oidc:sub` to a GitHub environment (`repo:ORG/REPO:environment:production`) or branch (`repo:ORG/REPO:ref:refs/heads/main`) — never a bare `repo:ORG/REPO:*` for production.
-3. **Permissions** — attach only what the workflow needs to the agency (CAE operate permissions; SWR push if the same job pushes images).
+3. **Permissions** — attach only what the workflow needs to the agency: CAE operate permissions for the deploy; if the same job pushes images, SWR permission to create a temporary login (`swr::createLoginSecret`) and to push to the target organization. Scope everything to the deploy region's project. Use one agency per environment (staging / production) so a staging run can never deploy production.
 4. In the **app repo** — create a `production` environment and repository variables `HUAWEI_OIDC_PROVIDER_URN`, `HUAWEI_AGENCY_URN`, `HUAWEI_PROJECT_ID`.
 
 ### **2. Create workflow (`.github/workflows/deploy-cae.yml`)**
@@ -60,8 +62,21 @@ jobs:
           provider-urn: ${{ vars.HUAWEI_OIDC_PROVIDER_URN }}
           agency-urn: ${{ vars.HUAWEI_AGENCY_URN }}
           sts-region: af-south-1
+          duration-seconds: 3600
 
-      # ... build and push the image to SWR here, tagged $IMAGE_TAG ...
+      - name: Log in to SWR (temporary, no stored keys)
+        uses: Oluwatunmise-olat/huaweicloud-cae-deploy/swr-login@FULL_COMMIT_SHA
+        with:
+          region: af-south-1
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: swr.af-south-1.myhuaweicloud.com/my-org/my-image:${{ github.sha }}
 
       - name: Deploy to CAE
         uses: Oluwatunmise-olat/huaweicloud-cae-deploy@FULL_COMMIT_SHA
@@ -75,6 +90,8 @@ jobs:
           swr_repository: my-image
           image_tag: ${{ github.sha }}
 ```
+
+If the image is already in SWR (e.g. promoting a tested tag), drop the `swr-login` and build steps.
 
 A complete, runnable example is in [`examples/deploy-cae.yml`](examples/deploy-cae.yml).
 
@@ -94,6 +111,16 @@ A complete, runnable example is in [`examples/deploy-cae.yml`](examples/deploy-c
 | `session-name` | Appears in CTS audit logs (2-128 chars, `[A-Za-z0-9_+=,.@-]`) | No | `gha-<run_id>-<attempt>` |
 
 Output: `expiration`.
+
+### `swr-login`
+
+| Name | Description | Required | Default |
+|---|---|---|---|
+| `region` | SWR region, e.g. `af-south-1` | Yes | |
+| `duration-seconds` | Login lifetime, 900-86400; empty uses the API default | No | `3600` |
+| `accessKey` / `secretKey` / `securityToken` | Only needed if you skip the `auth` step | No | from env |
+
+Output: `registry` (e.g. `swr.af-south-1.myhuaweicloud.com`).
 
 ### Deploy (root action)
 
@@ -119,6 +146,8 @@ Output: `expiration`.
 * All keys, tokens, and secrets are masked in workflow logs (`::add-mask::`)
 * Inputs are passed through `env`, never interpolated directly into shell commands
 * Trust policy should pin `oidc:sub` to a specific GitHub environment or branch, not a wildcard
+* `swr-login` passes the registry password to `docker login --password-stdin`, never on the command line
+* Docker stores the login in `~/.docker/config.json`. GitHub-hosted runners are discarded after the job; on **self-hosted** runners, add `docker logout <registry>` as a final `if: always()` step
 
 ---
 
@@ -129,6 +158,7 @@ Output: `expiration`.
 * Project ID and, if applicable, Enterprise Project ID
 * An SWR image repository already populated (via CI/CD or manual push)
 * A runner with `bash`, `curl`, and `jq` available (all pre-installed on `ubuntu-latest`); the action also installs `hcloud` (KooCLI) on first use
+* For `swr-login`: Docker on the runner (pre-installed on `ubuntu-latest`)
 
 ---
 
@@ -146,6 +176,15 @@ Try `sts-region: ap-southeast-1`.
 **Environment / Application / Component not found**
 Names are case-sensitive, and `project_id` must belong to `region`.
 
+**SWR CreateSecret failed**
+The agency lacks permission to create a temporary SWR login, or the credentials expired. If the error mentions `duration_seconds`, your KooCLI version predates that parameter: set `duration-seconds: ""` to use the API default.
+
+**`denied: requested access to the resource is denied` on push**
+Login worked, but the agency has no push permission on that SWR organization.
+
+**Credentials expired mid-job**
+`auth` credentials last `duration-seconds` (default 3600). Raise it if your build is long.
+
 **Invalid image URL**
 The image URL must follow this pattern:
 
@@ -159,6 +198,7 @@ swr.<region>.myhuaweicloud.com/<swr_organization>/<swr_repository>:<image_tag>
 
 * [CAE Product Overview](https://support.huaweicloud.com/intl/en-us/productdesc-cae/cae_01_0001.html)
 * [Huawei Cloud CLI (`hcloud`)](https://support.huaweicloud.com/intl/en-us/productdesc-hcli/hcli_01.html)
+* [SWR: Generating a Temporary Login Command (`CreateSecret`)](https://support.huaweicloud.com/intl/en-us/api-swr/swr_02_0052.html)
 * [Enterprise Project Management](https://support.huaweicloud.com/intl/en-us/usermanual-em/pm_topic_0003.html)
 
 ---
